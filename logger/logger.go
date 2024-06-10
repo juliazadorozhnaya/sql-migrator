@@ -8,7 +8,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Logger интерфейс для логирования
 type Logger interface {
 	Fatal(msg string, v ...interface{})
 	Error(msg string, v ...interface{})
@@ -17,24 +16,23 @@ type Logger interface {
 	Debug(msg string, v ...interface{})
 }
 
-// Config интерфейс для конфигурации логгера
-type Config interface {
-	GetLevel() string
+type ZeroLogger struct {
 }
 
-// logger реализация интерфейса Logger
-type logger struct {
-}
-
-func New() Logger {
+func New() *ZeroLogger {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "2006-01-02 15:04:05"})
 
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	return &logger{}
+	level := getLevelFromEnv()
+	zerolog.SetGlobalLevel(level)
+	return &ZeroLogger{}
 }
 
-// getLevel возвращает уровень логирования, соответствующий строке
+func getLevelFromEnv() zerolog.Level {
+	level := os.Getenv("LOG_LEVEL")
+	return getLevel(level)
+}
+
 func getLevel(level string) zerolog.Level {
 	switch strings.ToLower(level) {
 	case "fatal":
@@ -52,27 +50,22 @@ func getLevel(level string) zerolog.Level {
 	}
 }
 
-// Fatal логирует сообщение уровня Fatal
-func (l *logger) Fatal(msg string, v ...interface{}) {
+func (l *ZeroLogger) Fatal(msg string, v ...interface{}) {
 	log.Fatal().Msgf(msg, v...)
 }
 
-// Error логирует сообщение уровня Error
-func (l *logger) Error(msg string, v ...interface{}) {
+func (l *ZeroLogger) Error(msg string, v ...interface{}) {
 	log.Error().Msgf(msg, v...)
 }
 
-// Warn логирует сообщение уровня Warn
-func (l *logger) Warn(msg string, v ...interface{}) {
+func (l *ZeroLogger) Warn(msg string, v ...interface{}) {
 	log.Warn().Msgf(msg, v...)
 }
 
-// Info логирует сообщение уровня Info
-func (l *logger) Info(msg string, v ...interface{}) {
+func (l *ZeroLogger) Info(msg string, v ...interface{}) {
 	log.Info().Msgf(msg, v...)
 }
 
-// Debug логирует сообщение уровня Debug
-func (l *logger) Debug(msg string, v ...interface{}) {
+func (l *ZeroLogger) Debug(msg string, v ...interface{}) {
 	log.Debug().Msgf(msg, v...)
 }

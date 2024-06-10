@@ -6,27 +6,25 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/juliazadorozhnaya/sql-migrator/logger"
 )
 
-// Storage описывает интерфейс для работы с хранилищем миграций
-type Storage interface {
-	SelectMigrations(context.Context) ([]IMigration, error)
-	SelectLastMigrationByStatus(context.Context, string) (IMigration, error)
-	Connect(context.Context) error
+// advisoryLockID — это идентификатор, используемый для создания уникальной блокировки.
+// Он должен быть уникальным для приложения и не пересекаться с другими существующими возможными блокировками в бд.
+const advisoryLockID = 123456
+
+type SqlStorage interface {
+	Connect(ctx context.Context) error
 	Close() error
-
-	InsertMigration(context.Context, IMigration) error
-	Migrate(context.Context, string) error
-	DeleteMigrations(context.Context) error
+	Lock(ctx context.Context) error
+	Unlock(ctx context.Context) error
+	InsertMigration(ctx context.Context, migration IMigration) error
+	Migrate(ctx context.Context, sql string) error
+	SelectMigrations(ctx context.Context) ([]IMigration, error)
+	SelectLastMigrationByStatus(ctx context.Context, status string) (IMigration, error)
+	DeleteMigrations(ctx context.Context) error
 }
 
-// sqlStorage представляет собой реализацию интерфейса Storage
-type sqlStorage struct {
-	connString string
-	pool       *pgxpool.Pool
-}
-
-// Константы статусов миграций
 const (
 	StatusProcess      = "process"
 	StatusSuccess      = "success"
@@ -35,29 +33,36 @@ const (
 	StatusCancel       = "cancel"
 )
 
-// Определение ошибок
+type PostgresStorage struct {
+	connString string
+	pool       *pgxpool.Pool
+	logger     logger.Logger
+}
+
 var (
 	ErrUnexpectedStatus  = errors.New("unexpected status")
-	ErrMigrationNotFound = errors.New("migration not found")
+	ErrMigrationNotFound = errors.New("processes not found")
 )
 
-// New создает новый экземпляр sqlStorage
-func New(connString string) Storage {
-	return &sqlStorage{
+func New(connString string, logger logger.Logger) *PostgresStorage {
+	return &PostgresStorage{
 		connString: connString,
+		logger:     logger,
 	}
 }
 
-// Connect подключается к базе данных и создает таблицу для миграций, если она не существует
-func (storage *sqlStorage) Connect(ctx context.Context) error {
+func (storage *PostgresStorage) Connect(ctx context.Context) error {
+	storage.logger.Info("Connecting to the database")
+
 	pool, err := pgxpool.Connect(ctx, storage.connString)
 	if err != nil {
+		storage.logger.Error("Failed to connect to the database: %v", err)
 		return err
 	}
 
 	sql := `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
-			Version INTEGER,
+			Version INTEGER PRIMARY KEY,
 			Name CHARACTER VARYING(100),
 			Status CHARACTER VARYING(20),
 			StatusChangeTime TIMESTAMP
@@ -65,33 +70,60 @@ func (storage *sqlStorage) Connect(ctx context.Context) error {
 
 	_, err = pool.Exec(ctx, sql)
 	if err != nil {
+		storage.logger.Error("Failed to create schema_migrations table: %v", err)
+		pool.Close()
 		return err
 	}
 
 	storage.pool = pool
+	storage.logger.Info("Connected to the database and ensured schema_migrations table exists")
 	return nil
 }
 
-// Close закрывает пул соединений с базой данных
-func (storage *sqlStorage) Close() error {
+func (storage *PostgresStorage) Close() error {
+	storage.logger.Info("Closing database connection pool")
+
 	if storage.pool != nil {
 		storage.pool.Close()
+		storage.logger.Info("Database connection pool closed")
 	}
 	return nil
 }
 
-// DeleteMigrations удаляет все записи из таблицы schema_migrations
-func (storage *sqlStorage) DeleteMigrations(ctx context.Context) error {
-	_, err := storage.pool.Exec(ctx, "TRUNCATE schema_migrations;")
+func (storage *PostgresStorage) Lock(ctx context.Context) error {
+	storage.logger.Info("Acquiring advisory lock")
+	_, err := storage.pool.Exec(ctx, "SELECT pg_advisory_lock($1);", advisoryLockID)
+	if err != nil {
+		storage.logger.Error("Failed to acquire advisory lock: %v", err)
+	}
 	return err
 }
 
-// SelectMigrations выбирает все миграции из таблицы schema_migrations
-func (storage *sqlStorage) SelectMigrations(ctx context.Context) ([]IMigration, error) {
+func (storage *PostgresStorage) Unlock(ctx context.Context) error {
+	storage.logger.Info("Releasing advisory lock")
+	_, err := storage.pool.Exec(ctx, "SELECT pg_advisory_unlock($1);", advisoryLockID)
+	if err != nil {
+		storage.logger.Error("Failed to release advisory lock: %v", err)
+	}
+	return err
+}
+
+func (storage *PostgresStorage) DeleteMigrations(ctx context.Context) error {
+	storage.logger.Info("Deleting all migrations from schema_migrations table")
+	_, err := storage.pool.Exec(ctx, "TRUNCATE schema_migrations;")
+	if err != nil {
+		storage.logger.Error("Failed to delete migrations: %v", err)
+	}
+	return err
+}
+
+func (storage *PostgresStorage) SelectMigrations(ctx context.Context) ([]IMigration, error) {
+	storage.logger.Info("Selecting all migrations from schema_migrations table")
 	sql := `SELECT Name, Status, Version, StatusChangeTime FROM schema_migrations ORDER BY Version DESC;`
 
 	rows, err := storage.pool.Query(ctx, sql)
 	if err != nil {
+		storage.logger.Error("Failed to select migrations: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -107,6 +139,7 @@ func (storage *sqlStorage) SelectMigrations(ctx context.Context) ([]IMigration, 
 
 		err = rows.Scan(&name, &status, &version, &statusChangeTime)
 		if err != nil {
+			storage.logger.Error("Failed to scan migration row: %v", err)
 			return nil, err
 		}
 
@@ -114,17 +147,20 @@ func (storage *sqlStorage) SelectMigrations(ctx context.Context) ([]IMigration, 
 	}
 
 	if len(migrations) == 0 {
+		storage.logger.Warn("No migrations found")
 		return nil, ErrMigrationNotFound
 	}
 
 	return migrations, nil
 }
 
-// SelectLastMigrationByStatus выбирает последнюю миграцию с указанным статусом из таблицы schema_migrations
-func (storage *sqlStorage) SelectLastMigrationByStatus(ctx context.Context, status string) (IMigration, error) {
+func (storage *PostgresStorage) SelectLastMigrationByStatus(ctx context.Context, status string) (IMigration, error) {
+	storage.logger.Info("Selecting last migration with status: %s", status)
+
 	switch status {
 	case StatusSuccess, StatusError, StatusProcess, StatusCancellation, StatusCancel:
 	default:
+		storage.logger.Error("Unexpected status: %s", status)
 		return nil, ErrUnexpectedStatus
 	}
 
@@ -132,6 +168,7 @@ func (storage *sqlStorage) SelectLastMigrationByStatus(ctx context.Context, stat
 
 	rows, err := storage.pool.Query(ctx, sql, status)
 	if err != nil {
+		storage.logger.Error("Failed to select last migration by status: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -146,17 +183,20 @@ func (storage *sqlStorage) SelectLastMigrationByStatus(ctx context.Context, stat
 
 		err = rows.Scan(&name, &status, &version, &statusChangeTime)
 		if err != nil {
+			storage.logger.Error("Failed to scan migration row: %v", err)
 			return nil, err
 		}
 
 		return NewMigration(name, status, version, statusChangeTime), nil
 	}
 
+	storage.logger.Warn("No migration found with status: %s", status)
 	return nil, ErrMigrationNotFound
 }
 
-// InsertMigration вставляет или обновляет запись миграции в таблице schema_migrations
-func (storage *sqlStorage) InsertMigration(ctx context.Context, migration IMigration) error {
+func (storage *PostgresStorage) InsertMigration(ctx context.Context, migration IMigration) error {
+	storage.logger.Info("Inserting/updating migration: %s", migration.GetName())
+
 	sql := `
 		DO $$ 
 		BEGIN
@@ -171,11 +211,17 @@ func (storage *sqlStorage) InsertMigration(ctx context.Context, migration IMigra
 		END $$;`
 
 	_, err := storage.pool.Exec(ctx, sql, migration.GetVersion(), migration.GetName(), migration.GetStatus(), migration.GetStatusChangeTime())
+	if err != nil {
+		storage.logger.Error("Failed to insert/update migration: %v", err)
+	}
 	return err
 }
 
-// Migrate выполняет SQL запрос для миграции
-func (storage *sqlStorage) Migrate(ctx context.Context, sql string) error {
+func (storage *PostgresStorage) Migrate(ctx context.Context, sql string) error {
+	storage.logger.Info("Executing migration SQL")
 	_, err := storage.pool.Exec(ctx, sql)
+	if err != nil {
+		storage.logger.Error("Failed to execute migration SQL: %v", err)
+	}
 	return err
 }
