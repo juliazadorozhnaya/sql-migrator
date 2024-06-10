@@ -67,11 +67,11 @@ func main() {
 
 	l := logger.New()
 	db := storage.New(database, l)
-	application := app.New(l, *db)
+	application := app.New(l, db)
 
 	switch command {
 	case "create":
-		application.Create(migrationName, path)
+		application.Create(migrationName, path, "sql")
 	case "up":
 		application.Up(path)
 	case "down":
