@@ -1,20 +1,14 @@
-# This workflow will build a Golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go Build and Test
+name: CI Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
-
-env:
-  GO111MODULE: "on"
+    branches: [ "master" ]
 
 jobs:
-  build-and-test:
-    name: Build and Test
+  lint:
+    name: Run golangci-lint
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -23,29 +17,41 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'  # Make sure to use a specific version to avoid unexpected changes in language behavior.
+          go-version: '1.21'  # Ensure Go version is at least 1.14
 
-      - name: Cache Go modules
-        uses: actions/cache@v3
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
+
+      - name: Run golangci-lint
+        run: golangci-lint run --config ./path/to/your/.golangci.yml
+
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
-          path: |
-            ~/.cache/go-build
-            /go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      - name: Install dependencies
-        run: go mod download
-
-      - name: Run linters
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: v1.50.1
-          args: --timeout 5m
-
-      - name: Build
-        run: go build -v ./...
+          go-version: '1.21'
 
       - name: Run tests
-        run: go test -v -count=1 -race -timeout=1m ./...
+        run: go test -race -count=100 ./...
+
+  build:
+    name: Build Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build binary
+        run: go build -v -o ./bin/gomigrator ./cmd/gomigrator
