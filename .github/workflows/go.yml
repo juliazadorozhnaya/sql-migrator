@@ -1,26 +1,134 @@
-# This workflow will build a Golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go Build and Test
+name: sql-migrator-otus
+run-name: ${{ github.actor }} SQL Migrator Tools Project
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - master
+      - main
+      - develop
+
+env:
+  GO111MODULE: "on"
 
 jobs:
-  build-and-test:
-    name: Build and Test
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - name: Extract branch name
+        run: echo "BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
 
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'  # Make sure to use a specific version to avoid unexpected changes in language behavior.
+          go-version: ~1.21
 
-      - name: Build
-        run: go build -v ./...
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Linters
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: v1.55.2
+          working-directory: ./
+
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Extract branch name
+        run: echo "BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.21
+
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: go test -v -count=100 -race -timeout=1m ./... -coverprofile=./cover.out -covermode=atomic -coverpkg=./...
+        working-directory: ./
+
+      - name: Check test coverage
+        uses: vladopajic/go-test-coverage@v2
+        with:
+          config: ./.github/.testcoverage.yml
+          git-branch: badges
+          git-token: ${{ github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+
+      - name: Optimization tests
+        run: go test -v -count=1 -timeout=1m -tags bench ./...
+        working-directory: ./
+
+      - name: Bash tests
+        shell: bash
+        run: ./test.sh
+        if: ${{ hashFiles('./test.sh') != '' }}
+        working-directory: ./
+
+  tests_by_makefile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.21
+
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: make lint
+        run: make lint
+        working-directory: ./
+
+      - name: make build
+        run: make build
+        working-directory: ./
+
+      - name: make test
+        run: make test
+        working-directory: ./
+
+  integration_tests:
+    needs:
+      - tests
+      - lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: "password"
+          POSTGRES_DB: "gomigrator"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: "127.0.0.1"
+      PGUSER: "postgres"
+      PGPASSWORD: "password"
+      PGDATABASE: "gomigrator"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+      - name: setup-go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.21
+          cache: true
+          cache-dependency-path: go.sum
+      - name: install gomigrator
+        run: go install ./...
+      - name: postgres integration tests
+        run: DSN=postgresql://${{env.PGUSER}}:${{env.PGPASSWORD}}@${{env.PGHOST}}:5432/${{env.PGDATABASE}}?sslmode=disable DIR=./migrations go test -v -count=1 -timeout=1m -tags integration ./
+        working-directory: ./test
