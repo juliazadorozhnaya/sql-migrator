@@ -14,17 +14,14 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Set up environment variable for branch
+        run: echo "BRANCH=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+
+      - name: Linters
+        uses: golangci/golangci-lint-action@v3
         with:
-          go-version: '1.21'  # Ensure Go version is at least 1.14
-
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2
-
-      - name: Run golangci-lint
-        run: golangci-lint run --config ./path/to/your/.golangci.yml
+          version: v1.50.1
+          working-directory: ${{ env.BRANCH }}
 
   test:
     name: Run Unit Tests
@@ -55,3 +52,25 @@ jobs:
 
       - name: Build binary
         run: go build -v -o ./bin/gomigrator ./cmd/gomigrator
+
+  deploy:
+    name: Deploy to Develop Environment
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Copy Binary to Deployment Server
+        run: scp -o StrictHostKeyChecking=no ./bin/gomigrator user@develop-server:/path/to/deployment
+
+      - name: Restart Service
+        run: ssh user@develop-server 'sudo systemctl restart gomigrator'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
