@@ -175,7 +175,7 @@ func createMigrationFiles(filePath string, version int, name string, logger logg
 		logger.Info(downFile + " created")
 	case "go":
 		upFile := path.Join(filePath, fmt.Sprintf("%05d_%s_up.go", version, name))
-		upContent := fmt.Sprintf(`package main
+		upContent := `package main
 
 import (
 	"context"
@@ -203,7 +203,7 @@ func Up(ctx context.Context) error {
 	fmt.Println("Migration Up applied: users table created")
 	return nil
 }
-`)
+`
 		err := os.WriteFile(upFile, []byte(upContent), 0644)
 		if err != nil {
 			return err
@@ -211,7 +211,7 @@ func Up(ctx context.Context) error {
 		logger.Info(upFile + " created")
 
 		downFile := path.Join(filePath, fmt.Sprintf("%05d_%s_down.go", version, name))
-		downContent := fmt.Sprintf(`package main
+		downContent := `package main
 
 import (
 	"context"
@@ -233,7 +233,7 @@ func Down(ctx context.Context) error {
 	fmt.Println("Migration Down applied: users table dropped")
 	return nil
 }
-`)
+`
 		err = os.WriteFile(downFile, []byte(downContent), 0644)
 		if err != nil {
 			return err

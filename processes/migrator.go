@@ -90,7 +90,12 @@ func (m *Migrator) Up(ctx context.Context) error {
 		m.logger.Error("Error in Up: %v", err)
 		return err
 	}
-	defer m.storage.Unlock(ctx)
+	defer func(storage storage.SqlStorage, ctx context.Context) {
+		err := storage.Unlock(ctx)
+		if err != nil {
+			m.logger.Error("Error in Unlock: %v", err)
+		}
+	}(m.storage, ctx)
 
 	lastVersion := 0
 	lastMigration, err := m.storage.SelectLastMigrationByStatus(ctx, storage.StatusSuccess)
@@ -125,7 +130,12 @@ func (m *Migrator) Down(ctx context.Context) error {
 		m.logger.Error("Error in Down: %v", err)
 		return err
 	}
-	defer m.storage.Unlock(ctx)
+	defer func(storage storage.SqlStorage, ctx context.Context) {
+		err := storage.Unlock(ctx)
+		if err != nil {
+			return
+		}
+	}(m.storage, ctx)
 
 	lastMigration, err := m.storage.SelectLastMigrationByStatus(ctx, storage.StatusSuccess)
 	if err != nil {
@@ -162,7 +172,10 @@ func (m *Migrator) upMigration(ctx context.Context, migration storage.IMigration
 		if err := upGo(ctx); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
 			m.logger.Error("Error in upMigration: %v", err)
 			return err
@@ -171,7 +184,10 @@ func (m *Migrator) upMigration(ctx context.Context, migration storage.IMigration
 		if err := m.storage.Migrate(ctx, sql); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
 			m.logger.Error("Error in upMigration: %v", err)
 			return err
@@ -202,7 +218,10 @@ func (m *Migrator) downMigration(ctx context.Context, migration storage.IMigrati
 		if err := downGo(ctx); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
 			m.logger.Error("Error in downMigration: %v", err)
 			return err
@@ -211,7 +230,10 @@ func (m *Migrator) downMigration(ctx context.Context, migration storage.IMigrati
 		if err := m.storage.Migrate(ctx, sql); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
 			m.logger.Error("Error in downMigration: %v", err)
 			return err
