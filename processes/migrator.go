@@ -10,6 +10,7 @@ import (
 	"github.com/juliazadorozhnaya/sql-migrator/storage"
 )
 
+// Интерфейс IMigration определяет методы для работы с миграциями
 type IMigration interface {
 	Connect(context.Context) error
 	Close(context.Context) error
@@ -21,21 +22,24 @@ type IMigration interface {
 	DbVersion(context.Context) error
 }
 
+// Структура Migrator реализует интерфейс IMigration
 type Migrator struct {
 	logger     logger.Logger
 	storage    storage.SqlStorage
 	migrations []storage.Migration
 }
 
+// Определение ошибок для обработки различных ситуаций
 var (
-	ErrMigrationUp                = errors.New("error processes up")
-	ErrMigrationDown              = errors.New("error processes down")
-	ErrMigrationRedo              = errors.New("error processes redo")
-	ErrGetStatus                  = errors.New("error db status")
-	ErrGetVersion                 = errors.New("error db version")
-	ErrUnexpectedMigrationVersion = errors.New("unexpected processes version")
+	ErrMigrationUp                = errors.New("ошибка выполнения миграции вверх")
+	ErrMigrationDown              = errors.New("ошибка выполнения миграции вниз")
+	ErrMigrationRedo              = errors.New("ошибка выполнения повторной миграции")
+	ErrGetStatus                  = errors.New("ошибка получения статуса БД")
+	ErrGetVersion                 = errors.New("ошибка получения версии БД")
+	ErrUnexpectedMigrationVersion = errors.New("неожиданная версия миграции")
 )
 
+// Конструктор для создания нового объекта Migrator
 func New(connString storage.SqlStorage, logger logger.Logger) *Migrator {
 	return &Migrator{
 		storage:    connString,
@@ -44,35 +48,39 @@ func New(connString storage.SqlStorage, logger logger.Logger) *Migrator {
 	}
 }
 
+// Метод для подключения к базе данных
 func (m *Migrator) Connect(ctx context.Context) error {
-	m.logger.Info("Connecting to database")
+	m.logger.Info("Подключение к базе данных")
 
 	err := m.storage.Connect(ctx)
 	if err != nil {
-		m.logger.Error("Error in Connect: %v", err)
+		m.logger.Error("Ошибка при подключении: %v", err)
 		return err
 	}
 
-	m.logger.Info("Connected to database")
+	m.logger.Info("Подключение к базе данных успешно")
 	return nil
 }
 
+// Метод для закрытия подключения к базе данных
 func (m *Migrator) Close(ctx context.Context) error {
-	m.logger.Info("Closing database connection")
+	m.logger.Info("Закрытие подключения к базе данных")
 
 	err := m.storage.Close()
 	if err != nil {
-		m.logger.Error("Error in Close: %v", err)
+		m.logger.Error("Ошибка при закрытии: %v", err)
 		return err
 	}
 
-	m.logger.Info("Database connection closed")
+	m.logger.Info("Подключение к базе данных закрыто")
 	return nil
 }
 
+// Метод для создания миграции
 func (m *Migrator) Create(name, up, down string, upGo, downGo func(ctx context.Context) error) {
-	m.logger.Info("Creating migration: %s", name)
+	m.logger.Info("Создание миграции: %s", name)
 	m.migrations = append(m.migrations, storage.Migration{
+		Status:  "success",
 		Version: len(m.migrations) + 1,
 		Name:    name,
 		Up:      up,
@@ -80,81 +88,96 @@ func (m *Migrator) Create(name, up, down string, upGo, downGo func(ctx context.C
 		UpGo:    upGo,
 		DownGo:  downGo,
 	})
-	m.logger.Info("Migration %s created", name)
+	m.logger.Info("Миграция %s создана", name)
 }
 
+// Метод для выполнения миграций вверх
 func (m *Migrator) Up(ctx context.Context) error {
-	m.logger.Info("Starting migrations")
+	m.logger.Info("Начало выполнения миграций")
 
 	if err := m.storage.Lock(ctx); err != nil {
-		m.logger.Error("Error in Up: %v", err)
+		m.logger.Error("Ошибка при блокировке: %v", err)
 		return err
 	}
-	defer m.storage.Unlock(ctx)
+	defer func(storage storage.SqlStorage, ctx context.Context) {
+		err := storage.Unlock(ctx)
+		if err != nil {
+			m.logger.Error("Ошибка при разблокировке: %v", err)
+		}
+	}(m.storage, ctx)
 
 	lastVersion := 0
 	lastMigration, err := m.storage.SelectLastMigrationByStatus(ctx, storage.StatusSuccess)
 	if err == nil {
 		lastVersion = lastMigration.GetVersion()
 	} else if !errors.Is(err, storage.ErrMigrationNotFound) {
-		m.logger.Error("Error in Up: %v", err)
+		m.logger.Error("1Ошибка при получении последней успешной миграции: %v", err)
 		return err
 	}
 
 	if lastMigration != nil && lastMigration.GetVersion()-1 > len(m.migrations) {
-		m.logger.Error("Error in Up: %v", ErrUnexpectedMigrationVersion)
+		m.logger.Error("Ошибка: %v", ErrUnexpectedMigrationVersion)
 		return ErrUnexpectedMigrationVersion
 	}
 
 	for i := lastVersion; i < len(m.migrations); i++ {
 		err = m.upMigration(ctx, &m.migrations[i], m.migrations[i].Up, m.migrations[i].UpGo)
 		if err != nil {
-			m.logger.Error("Error in Up: %v", err)
+			m.logger.Error("Ошибка при выполнении миграции вверх: %v", err)
 			return ErrMigrationUp
 		}
 	}
 
-	m.logger.Info("Migrations completed")
+	m.logger.Info("Миграции успешно выполнены")
 	return nil
 }
-
 func (m *Migrator) Down(ctx context.Context) error {
-	m.logger.Info("Starting rollback")
+	m.logger.Info("Начало выполнения отката миграций")
 
 	if err := m.storage.Lock(ctx); err != nil {
-		m.logger.Error("Error in Down: %v", err)
+		m.logger.Error("Ошибка при блокировке: %v", err)
 		return err
 	}
-	defer m.storage.Unlock(ctx)
+	defer func(storage storage.SqlStorage, ctx context.Context) {
+		err := storage.Unlock(ctx)
+		if err != nil {
+			m.logger.Error("Ошибка при разблокировке: %v", err)
+		}
+	}(m.storage, ctx)
 
 	lastMigration, err := m.storage.SelectLastMigrationByStatus(ctx, storage.StatusSuccess)
 	if err != nil {
-		m.logger.Error("Error in Down: %v", err)
+		if errors.Is(err, storage.ErrMigrationNotFound) {
+			m.logger.Warn("Нет успешных миграций для отката")
+			return nil
+		}
+		m.logger.Error("Ошибка при получении последней успешной миграции: %v", err)
 		return err
 	}
 
-	if lastMigration != nil && lastMigration.GetVersion()-1 > len(m.migrations) {
-		m.logger.Error("Error in Down: %v", ErrUnexpectedMigrationVersion)
+	if lastMigration.GetVersion() > len(m.migrations) {
+		m.logger.Error("Ошибка: %v", ErrUnexpectedMigrationVersion)
 		return ErrUnexpectedMigrationVersion
 	}
 
 	downMigrationIndex := lastMigration.GetVersion() - 1
 	err = m.downMigration(ctx, &m.migrations[downMigrationIndex], m.migrations[downMigrationIndex].Down, m.migrations[downMigrationIndex].DownGo)
 	if err != nil {
-		m.logger.Error("Error in Down: %v", err)
+		m.logger.Error("Ошибка при выполнении отката миграции: %v", err)
 		return ErrMigrationDown
 	}
 
-	m.logger.Info("Rollback completed")
+	m.logger.Info("Откат миграций успешно выполнен")
 	return nil
 }
 
+// Вспомогательный метод для выполнения миграции вверх
 func (m *Migrator) upMigration(ctx context.Context, migration storage.IMigration, sql string, upGo func(ctx context.Context) error) error {
 	migration.SetStatus(storage.StatusProcess)
 	migration.SetStatusChangeTime(time.Now())
 
 	if err := m.storage.InsertMigration(ctx, migration); err != nil {
-		m.logger.Error("Error in upMigration: %v", err)
+		m.logger.Error("Ошибка при вставке миграции: %v", err)
 		return err
 	}
 
@@ -162,18 +185,24 @@ func (m *Migrator) upMigration(ctx context.Context, migration storage.IMigration
 		if err := upGo(ctx); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
-			m.logger.Error("Error in upMigration: %v", err)
+			m.logger.Error("Ошибка при выполнении Go-миграции вверх: %v", err)
 			return err
 		}
 	} else if sql != "" {
 		if err := m.storage.Migrate(ctx, sql); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
-			m.logger.Error("Error in upMigration: %v", err)
+			m.logger.Error("Ошибка при выполнении SQL-миграции вверх: %v", err)
 			return err
 		}
 	}
@@ -181,11 +210,11 @@ func (m *Migrator) upMigration(ctx context.Context, migration storage.IMigration
 	migration.SetStatus(storage.StatusSuccess)
 	migration.SetStatusChangeTime(time.Now())
 	if err := m.storage.InsertMigration(ctx, migration); err != nil {
-		m.logger.Error("Error in upMigration: %v", err)
+		m.logger.Error("Ошибка при вставке миграции: %v", err)
 		return err
 	}
 
-	m.logger.Info("Migration %s to version %d applied successfully", migration.GetName(), migration.GetVersion())
+	m.logger.Info("Миграция %s до версии %d успешно применена", migration.GetName(), migration.GetVersion())
 	return nil
 }
 
@@ -194,7 +223,7 @@ func (m *Migrator) downMigration(ctx context.Context, migration storage.IMigrati
 	migration.SetStatusChangeTime(time.Now())
 
 	if err := m.storage.InsertMigration(ctx, migration); err != nil {
-		m.logger.Error("Error in downMigration: %v", err)
+		m.logger.Error("Ошибка в downMigration: %v", err)
 		return err
 	}
 
@@ -202,18 +231,24 @@ func (m *Migrator) downMigration(ctx context.Context, migration storage.IMigrati
 		if err := downGo(ctx); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
-			m.logger.Error("Error in downMigration: %v", err)
+			m.logger.Error("Ошибка в downMigration: %v", err)
 			return err
 		}
 	} else if sql != "" {
 		if err := m.storage.Migrate(ctx, sql); err != nil {
 			migration.SetStatus(storage.StatusError)
 			migration.SetStatusChangeTime(time.Now())
-			m.storage.InsertMigration(ctx, migration)
+			err := m.storage.InsertMigration(ctx, migration)
+			if err != nil {
+				return err
+			}
 
-			m.logger.Error("Error in downMigration: %v", err)
+			m.logger.Error("Ошибка в downMigration: %v", err)
 			return err
 		}
 	}
@@ -221,20 +256,21 @@ func (m *Migrator) downMigration(ctx context.Context, migration storage.IMigrati
 	migration.SetStatus(storage.StatusCancel)
 	migration.SetStatusChangeTime(time.Now())
 	if err := m.storage.InsertMigration(ctx, migration); err != nil {
-		m.logger.Error("Error in downMigration: %v", err)
+		m.logger.Error("Ошибка в downMigration: %v", err)
 		return err
 	}
 
-	m.logger.Info("Rollback of migration %s to version %d applied successfully", migration.GetName(), migration.GetVersion())
+	m.logger.Info("Откат миграции %s до версии %d успешно выполнен", migration.GetName(), migration.GetVersion())
 	return nil
 }
 
+// Метод для выполнения повторной миграции
 func (m *Migrator) Redo(ctx context.Context) error {
-	m.logger.Info("Starting redo process")
+	m.logger.Info("Начало выполнения повторной миграции")
 
 	err := m.Down(ctx)
 	if err != nil {
-		m.logger.Error("Error in Redo: %v", err)
+		m.logger.Error("Ошибка при откате миграции: %v", err)
 		return err
 	}
 
@@ -243,29 +279,30 @@ func (m *Migrator) Redo(ctx context.Context) error {
 	if err == nil {
 		lastVersion = lastMigration.GetVersion()
 	} else if !errors.Is(err, storage.ErrMigrationNotFound) {
-		m.logger.Error("Error in Redo: %v", err)
+		m.logger.Error("Ошибка при получении последней успешной миграции: %v", err)
 		return err
 	}
 
 	if lastMigration != nil && lastMigration.GetVersion()-1 > len(m.migrations) {
-		m.logger.Error("Error in Redo: %v", ErrUnexpectedMigrationVersion)
+		m.logger.Error("Ошибка: %v", ErrUnexpectedMigrationVersion)
 		return ErrUnexpectedMigrationVersion
 	}
 
 	err = m.upMigration(ctx, &m.migrations[lastVersion], m.migrations[lastVersion].Up, m.migrations[lastVersion].UpGo)
 	if err != nil {
-		m.logger.Error("Error in Redo: %v", err)
+		m.logger.Error("Ошибка при повторной миграции: %v", err)
 		return ErrMigrationRedo
 	}
 
-	m.logger.Info("Redo process completed")
+	m.logger.Info("Повторная миграция успешно выполнена")
 	return nil
 }
 
+// Метод для получения статуса миграций
 func (m *Migrator) Status(ctx context.Context) error {
 	migrations, err := m.storage.SelectMigrations(ctx)
 	if err != nil {
-		m.logger.Error("Error in Status: %v", err)
+		m.logger.Error("Ошибка при получении статуса: %v", err)
 		return ErrGetStatus
 	}
 
@@ -283,6 +320,7 @@ func (m *Migrator) Status(ctx context.Context) error {
 	return nil
 }
 
+// Метод для получения текущей версии базы данных
 func (m *Migrator) DbVersion(ctx context.Context) error {
 	lastVersion := 0
 
@@ -290,10 +328,10 @@ func (m *Migrator) DbVersion(ctx context.Context) error {
 	if err == nil {
 		lastVersion = lastMigration.GetVersion()
 	} else if !errors.Is(err, storage.ErrMigrationNotFound) {
-		m.logger.Error("Error in DbVersion: %v", err)
+		m.logger.Error("Ошибка при получении версии БД: %v", err)
 		return ErrGetVersion
 	}
 
-	m.logger.Info("Version: %d", lastVersion)
+	m.logger.Info("Версия: %d", lastVersion)
 	return nil
 }

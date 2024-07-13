@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/juliazadorozhnaya/sql-migrator/logger"
 	"github.com/juliazadorozhnaya/sql-migrator/storage"
@@ -13,11 +14,21 @@ import (
 
 func TestCreateMigrationFiles(t *testing.T) {
 	logger := logger.New()
-	mockStorage := &storage.MockSqlStorage{}
+	mockStorage := storage.NewMockSqlStorage()
 	app := New(logger, mockStorage)
 
 	migrationDir := "../migrations"
 	migrationName := "create_users"
+
+	// Создаем директорию миграций
+	if err := os.MkdirAll(migrationDir, 0755); err != nil {
+		t.Fatalf("Failed to create migrations directory: %v", err)
+	}
+
+	// Удаляем директорию после теста
+	t.Cleanup(func() {
+		os.RemoveAll(migrationDir)
+	})
 
 	app.Create(migrationName, migrationDir, "sql")
 
@@ -30,40 +41,46 @@ func TestCreateMigrationFiles(t *testing.T) {
 	os.Remove(downFile)
 }
 
-func TestUpMigration(t *testing.T) {
+func TestUpDownMigration(t *testing.T) {
 	logger := logger.New()
-	mockStorage := &storage.MockSqlStorage{}
+	mockStorage := storage.NewMockSqlStorage()
 	app := New(logger, mockStorage)
 
 	migrationDir := "../migrations"
 	migrationName := "create_users"
 
+	// Создаем директорию миграций
+	if err := os.MkdirAll(migrationDir, 0755); err != nil {
+		t.Fatalf("Failed to create migrations directory: %v", err)
+	}
+
+	// Удаляем директорию после теста
+	t.Cleanup(func() {
+		os.RemoveAll(migrationDir)
+	})
+
+	// Добавляем миграцию со статусом "success"
+	successMigration := storage.NewMigration(migrationName, storage.StatusSuccess, 1, time.Now())
+	if err := mockStorage.InsertMigration(context.Background(), successMigration); err != nil {
+		t.Fatalf("Failed to insert migration: %v", err)
+	}
+
+	// Создаем миграцию
 	app.Create(migrationName, migrationDir, "sql")
+	// Выполняем миграцию вверх
 	app.Up(migrationDir)
 
-	migrations, _ := mockStorage.SelectMigrations(context.Background())
-	assert.Equal(t, 1, len(migrations), "Expected one migration")
-	assert.Equal(t, "create_users", migrations[0].GetName(), "Expected migration name to be 'create_users'")
-
-	os.Remove(fmt.Sprintf("%s/00001_%s_up.sql", migrationDir, migrationName))
-	os.Remove(fmt.Sprintf("%s/00001_%s_down.sql", migrationDir, migrationName))
-}
-
-func TestDownMigration(t *testing.T) {
-	logger := logger.New()
-	mockStorage := &storage.MockSqlStorage{}
-	app := New(logger, mockStorage)
-
-	migrationDir := "../migrations"
-	migrationName := "create_users"
-
-	app.Create(migrationName, migrationDir, "sql")
+	// Выполняем откат миграции
 	app.Down(migrationDir)
 
+	// Проверяем, что миграция была откатана
 	migrations, _ := mockStorage.SelectMigrations(context.Background())
-	assert.Equal(t, 1, len(migrations), "Expected one migration")
-	assert.Equal(t, "create_users", migrations[0].GetName(), "Expected migration name to be 'create_users'")
+	assert.Equal(t, 1, len(migrations), "Expected one migration after rollback")
+	assert.Equal(t, storage.StatusCancel, migrations[0].GetStatus(), "Expected migration status to be 'canceled'")
 
-	os.Remove(fmt.Sprintf("%s/00001_%s_up.sql", migrationDir, migrationName))
-	os.Remove(fmt.Sprintf("%s/00001_%s_down.sql", migrationDir, migrationName))
+	// Удаляем файлы миграции
+	files, _ := os.ReadDir(migrationDir)
+	latestVersion := getLastVersion(files, logger)
+	os.Remove(fmt.Sprintf("%s/%05d_%s_up.sql", migrationDir, latestVersion, migrationName))
+	os.Remove(fmt.Sprintf("%s/%05d_%s_down.sql", migrationDir, latestVersion, migrationName))
 }

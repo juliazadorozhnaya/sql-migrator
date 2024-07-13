@@ -161,21 +161,21 @@ func createMigrationFiles(filePath string, version int, name string, logger logg
 	switch migrationType {
 	case "sql":
 		upFile := path.Join(filePath, fmt.Sprintf("%05d_%s_up.sql", version, name))
-		err := os.WriteFile(upFile, nil, 0644)
+		err := os.WriteFile(upFile, []byte(""), 0644)
 		if err != nil {
 			return err
 		}
 		logger.Info(upFile + " created")
 
 		downFile := path.Join(filePath, fmt.Sprintf("%05d_%s_down.sql", version, name))
-		err = os.WriteFile(downFile, nil, 0644)
+		err = os.WriteFile(downFile, []byte(""), 0644)
 		if err != nil {
 			return err
 		}
 		logger.Info(downFile + " created")
 	case "go":
 		upFile := path.Join(filePath, fmt.Sprintf("%05d_%s_up.go", version, name))
-		upContent := fmt.Sprintf(`package main
+		upContent := `package main
 
 import (
 	"context"
@@ -203,7 +203,7 @@ func Up(ctx context.Context) error {
 	fmt.Println("Migration Up applied: users table created")
 	return nil
 }
-`)
+`
 		err := os.WriteFile(upFile, []byte(upContent), 0644)
 		if err != nil {
 			return err
@@ -211,7 +211,7 @@ func Up(ctx context.Context) error {
 		logger.Info(upFile + " created")
 
 		downFile := path.Join(filePath, fmt.Sprintf("%05d_%s_down.go", version, name))
-		downContent := fmt.Sprintf(`package main
+		downContent := `package main
 
 import (
 	"context"
@@ -233,7 +233,7 @@ func Down(ctx context.Context) error {
 	fmt.Println("Migration Down applied: users table dropped")
 	return nil
 }
-`)
+`
 		err = os.WriteFile(downFile, []byte(downContent), 0644)
 		if err != nil {
 			return err
@@ -263,10 +263,11 @@ func getMigrations(filePath string) (map[int]*storage.Migration, error) {
 			}
 
 			parts := strings.Split(file.Name(), "_")
-			if len(parts) != 3 {
+			if len(parts) < 3 {
 				return nil, ErrInvalidMigrationName
 			}
 
+			migrationName := strings.Join(parts[1:len(parts)-1], "_")
 			sql, err := os.ReadFile(path.Join(filePath, file.Name()))
 			if err != nil {
 				return nil, err
@@ -278,7 +279,7 @@ func getMigrations(filePath string) (map[int]*storage.Migration, error) {
 				} else {
 					migrations[version] = &storage.Migration{
 						Version: version,
-						Name:    parts[1],
+						Name:    migrationName,
 						Up:      string(sql),
 					}
 				}
@@ -288,7 +289,7 @@ func getMigrations(filePath string) (map[int]*storage.Migration, error) {
 				} else {
 					migrations[version] = &storage.Migration{
 						Version: version,
-						Name:    parts[1],
+						Name:    migrationName,
 						Down:    string(sql),
 					}
 				}
@@ -300,7 +301,7 @@ func getMigrations(filePath string) (map[int]*storage.Migration, error) {
 				} else {
 					migrations[version] = &storage.Migration{
 						Version: version,
-						Name:    parts[1],
+						Name:    migrationName,
 						UpGo: func(ctx context.Context) error {
 							return runGoMigration(filePath, file.Name())
 						},
@@ -314,7 +315,7 @@ func getMigrations(filePath string) (map[int]*storage.Migration, error) {
 				} else {
 					migrations[version] = &storage.Migration{
 						Version: version,
-						Name:    parts[1],
+						Name:    migrationName,
 						DownGo: func(ctx context.Context) error {
 							return runGoMigration(filePath, file.Name())
 						},
