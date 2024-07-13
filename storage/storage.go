@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"github.com/jackc/pgx/v4"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -156,37 +155,43 @@ func (storage *PostgresStorage) SelectMigrations(ctx context.Context) ([]IMigrat
 }
 
 func (storage *PostgresStorage) SelectLastMigrationByStatus(ctx context.Context, status string) (IMigration, error) {
-	storage.logger.Info("Выбор последней миграции со статусом: %s", status)
+	storage.logger.Info("Selecting last migration with status: %s", status)
 
 	switch status {
 	case StatusSuccess, StatusError, StatusProcess, StatusCancellation, StatusCancel:
 	default:
-		storage.logger.Error("Неожиданный статус: %s", status)
+		storage.logger.Error("Unexpected status: %s", status)
 		return nil, ErrUnexpectedStatus
 	}
 
 	sql := `SELECT Name, Status, Version, StatusChangeTime FROM schema_migrations WHERE Status = $1 ORDER BY Version DESC LIMIT 1;`
 
-	row := storage.pool.QueryRow(ctx, sql, status)
-
-	var (
-		name             string
-		version          int
-		statusStr        string
-		statusChangeTime time.Time
-	)
-
-	err := row.Scan(&name, &statusStr, &version, &statusChangeTime)
+	rows, err := storage.pool.Query(ctx, sql, status)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			storage.logger.Warn("Миграция со статусом %s не найдена", status)
-			return nil, ErrMigrationNotFound
-		}
-		storage.logger.Error("Ошибка при получении последней миграции со статусом %s: %v", status, err)
+		storage.logger.Error("Failed to select last migration by status: %v", err)
 		return nil, err
 	}
+	defer rows.Close()
 
-	return NewMigration(name, statusStr, version, statusChangeTime), nil
+	if rows.Next() {
+		var (
+			name             string
+			version          int
+			status           string
+			statusChangeTime time.Time
+		)
+
+		err = rows.Scan(&name, &status, &version, &statusChangeTime)
+		if err != nil {
+			storage.logger.Error("Failed to scan migration row: %v", err)
+			return nil, err
+		}
+
+		return NewMigration(name, status, version, statusChangeTime), nil
+	}
+
+	storage.logger.Warn("No migration found with status: %s", status)
+	return nil, ErrMigrationNotFound
 }
 
 func (storage *PostgresStorage) InsertMigration(ctx context.Context, migration IMigration) error {
